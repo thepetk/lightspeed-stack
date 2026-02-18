@@ -40,7 +40,7 @@ RUN if [ -f /cachi2/cachi2.env ]; then \
     pip install --no-cache-dir --ignore-installed --no-index --find-links ${PIP_FIND_LINKS} --no-deps -r requirements.hashes.wheel.txt -r requirements.hashes.source.txt && \
     pip check; \
     else \
-    uv sync --locked --no-dev --group llslibdev; \
+    uv sync --no-dev --group llslibdev; \
     fi
 
 # Explicitly remove some packages to mitigate some CVEs

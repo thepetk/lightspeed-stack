@@ -60,7 +60,7 @@ from utils.endpoints import (
     cleanup_after_streaming,
     get_system_prompt,
 )
-from utils.query import create_violation_stream
+from utils.query import create_violation_stream, prepare_input, prepare_text_input
 from utils.quota import consume_tokens, get_available_quotas
 from utils.suid import normalize_conversation_id, to_llama_stack_conversation_id
 from utils.mcp_headers import mcp_headers_dependency
@@ -420,15 +420,11 @@ async def retrieve_response(  # pylint: disable=too-many-locals
         client, query_request, token, configuration, mcp_headers
     )
 
-    # Prepare input for Responses API
-    # Convert attachments to text and concatenate with query
-    input_text = query_request.query
-    if query_request.attachments:
-        for attachment in query_request.attachments:
-            input_text += (
-                f"\n\n[Attachment: {attachment.attachment_type}]\n"
-                f"{attachment.content}"
-            )
+    # Prepare input for Responses API.
+    # input_text is a plain-string representation used for moderation and logging.
+    # llm_input may be a multimodal message list when image attachments are present.
+    input_text = prepare_text_input(query_request)
+    llm_input = prepare_input(query_request)
 
     # Handle conversation ID for Responses API
     # Create conversation upfront if not provided
@@ -463,7 +459,7 @@ async def retrieve_response(  # pylint: disable=too-many-locals
         )
 
     create_params: dict[str, Any] = {
-        "input": input_text,
+        "input": llm_input,
         "model": model_id,
         "instructions": system_prompt,
         "stream": True,

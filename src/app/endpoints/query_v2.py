@@ -49,7 +49,7 @@ from utils.endpoints import (
     get_topic_summary_system_prompt,
 )
 from utils.mcp_headers import mcp_headers_dependency
-from utils.query import parse_arguments_string
+from utils.query import parse_arguments_string, prepare_input, prepare_text_input
 from utils.responses import extract_text_from_response_output_item
 from utils.shields import (
     append_turn_to_conversation,
@@ -358,15 +358,11 @@ async def retrieve_response(  # pylint: disable=too-many-locals,too-many-branche
         client, query_request, token, configuration, mcp_headers
     )
 
-    # Prepare input for Responses API
-    # Convert attachments to text and concatenate with query
-    input_text = query_request.query
-    if query_request.attachments:
-        for attachment in query_request.attachments:
-            # Append attachment content with type label
-            input_text += (
-                f"\n\n[Attachment: {attachment.attachment_type}]\n{attachment.content}"
-            )
+    # Prepare input for Responses API.
+    # input_text is a plain-string representation used for moderation and logging.
+    # llm_input may be a multimodal message list when image attachments are present.
+    input_text = prepare_text_input(query_request)
+    llm_input = prepare_input(query_request)
 
     # Handle conversation ID for Responses API
     # Create conversation upfront if not provided
@@ -411,7 +407,7 @@ async def retrieve_response(  # pylint: disable=too-many-locals,too-many-branche
 
     # Create OpenAI response using responses API
     create_kwargs: dict[str, Any] = {
-        "input": input_text,
+        "input": llm_input,
         "model": model_id,
         "instructions": system_prompt,
         "tools": cast(Any, toolgroups),

@@ -18,10 +18,18 @@ class Attachment(BaseModel):
 
     A list of attachments can be an optional part of 'query' request.
 
+    Text attachments (``text/plain``, ``application/json``, ``application/yaml``,
+    ``application/xml``) are appended to the query as plain text.
+
+    Image attachments (``image/png``, ``image/jpeg``, ``image/gif``, ``image/webp``)
+    must have ``attachment_type`` set to ``"screenshot"`` and their ``content`` field
+    must contain the raw base64-encoded image data (without a data-URI prefix).
+
     Attributes:
-        attachment_type: The attachment type, like "log", "configuration" etc.
-        content_type: The content type as defined in MIME standard
-        content: The actual attachment content
+        attachment_type: The attachment type, like "log", "configuration", "screenshot".
+        content_type: The content type as defined in MIME standard.
+        content: The actual attachment content. For image attachments this must be
+            base64-encoded image data.
 
     YAML attachments with **kind** and **metadata/name** attributes will
     be handled as resources with the specified name:
@@ -33,15 +41,18 @@ class Attachment(BaseModel):
     """
 
     attachment_type: str = Field(
-        description="The attachment type, like 'log', 'configuration' etc.",
-        examples=["log"],
+        description="The attachment type, like 'log', 'configuration', 'screenshot' etc.",
+        examples=["log", "screenshot"],
     )
     content_type: str = Field(
         description="The content type as defined in MIME standard",
-        examples=["text/plain"],
+        examples=["text/plain", "image/png"],
     )
     content: str = Field(
-        description="The actual attachment content",
+        description=(
+            "The actual attachment content. "
+            "For image attachments this must be base64-encoded image data."
+        ),
         examples=["warning: quota exceeded"],
     )
 
@@ -61,9 +72,9 @@ class Attachment(BaseModel):
                     "content": "kind: Pod\n metadata:\n name:    private-reg",
                 },
                 {
-                    "attachment_type": "configuration",
-                    "content_type": "application/yaml",
-                    "content": "foo: bar",
+                    "attachment_type": "screenshot",
+                    "content_type": "image/png",
+                    "content": "<base64-encoded PNG data>",
                 },
             ]
         },

@@ -3,6 +3,9 @@
 import json
 from typing import Any, AsyncIterator, Optional
 
+import constants
+from models.requests import QueryRequest
+
 
 from llama_stack.apis.agents.openai_responses import (
     OpenAIResponseContentPartOutputText,
@@ -16,6 +19,96 @@ from llama_stack.apis.agents.openai_responses import (
     OpenAIResponseOutputMessageContentOutputText,
     OpenAIResponseObjectStreamResponseCompleted,
 )
+
+
+def prepare_text_input(query_request: QueryRequest) -> str:
+    """Prepare a plain-text representation of the query and its attachments.
+
+    Always returns a string regardless of attachment types. Image attachments are
+    represented as ``<image>`` placeholders so that the string remains safe for
+    text-only consumers such as shield moderation or conversation logging.
+
+    Args:
+        query_request: The query request containing the query and optional attachments.
+
+    Returns:
+        str: The query text with attachment labels appended. Image attachments are
+            replaced by a ``<image>`` placeholder instead of their base64 content.
+    """
+    input_text = query_request.query
+    for attachment in query_request.attachments or []:
+        if attachment.content_type in constants.ATTACHMENT_IMAGE_CONTENT_TYPES:
+            input_text += f"\n\n[Attachment: {attachment.attachment_type}] <image>"
+        else:
+            input_text += (
+                f"\n\n[Attachment: {attachment.attachment_type}]\n{attachment.content}"
+            )
+    return input_text
+
+
+def prepare_input(query_request: QueryRequest) -> str | list[Any]:
+    """Prepare input for the Responses API, supporting both text and image attachments.
+
+    Returns a plain string when there are no image attachments (backward-compatible
+    behaviour). Returns a multimodal message list when at least one image attachment
+    is present so that the model can process the image alongside the text.
+
+    The multimodal list follows the OpenAI Responses API format::
+
+        [
+            {
+                "role": "user",
+                "type": "message",
+                "content": [
+                    {"type": "input_text", "text": "<query + text attachments>"},
+                    {"type": "input_image", "detail": "auto",
+                     "image_url": "data:image/png;base64,..."},
+                ],
+            }
+        ]
+
+    Args:
+        query_request: The query request containing the query and optional attachments.
+
+    Returns:
+        str | list[Any]: A plain string for text-only requests, or a message list for
+            requests that include one or more image attachments.
+    """
+    attachments = query_request.attachments or []
+    has_images = any(
+        a.content_type in constants.ATTACHMENT_IMAGE_CONTENT_TYPES for a in attachments
+    )
+
+    if not has_images:
+        input_text = query_request.query
+        for attachment in attachments:
+            input_text += (
+                f"\n\n[Attachment: {attachment.attachment_type}]\n{attachment.content}"
+            )
+        return input_text
+
+    # Multimodal: build text content from query + non-image attachments
+    text_content = query_request.query
+    for attachment in attachments:
+        if attachment.content_type not in constants.ATTACHMENT_IMAGE_CONTENT_TYPES:
+            text_content += (
+                f"\n\n[Attachment: {attachment.attachment_type}]\n{attachment.content}"
+            )
+
+    content_items: list[dict[str, str]] = [{"type": "input_text", "text": text_content}]
+    for attachment in attachments:
+        if attachment.content_type in constants.ATTACHMENT_IMAGE_CONTENT_TYPES:
+            content_items.append(
+                {
+                    "type": "input_image",
+                    "detail": "auto",
+                    "image_url": (
+                        f"data:{attachment.content_type};base64,{attachment.content}"
+                    ),
+                }
+            )
+
+    return [{"role": "user", "type": "message", "content": content_items}]
 
 
 def parse_arguments_string(arguments_str: str) -> dict[str, Any]:

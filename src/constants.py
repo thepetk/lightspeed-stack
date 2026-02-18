@@ -15,13 +15,25 @@ ATTACHMENT_TYPES = frozenset(
         "error message",
         "event",
         "log",
+        "screenshot",
         "stack trace",
     }
 )
 
+# Supported attachment image content types (subset of ATTACHMENT_CONTENT_TYPES)
+ATTACHMENT_IMAGE_CONTENT_TYPES = frozenset(
+    {"image/gif", "image/jpeg", "image/png", "image/webp"}
+)
+
 # Supported attachment content types
 ATTACHMENT_CONTENT_TYPES = frozenset(
-    {"text/plain", "application/json", "application/yaml", "application/xml"}
+    {
+        "text/plain",
+        "application/json",
+        "application/yaml",
+        "application/xml",
+    }
+    | ATTACHMENT_IMAGE_CONTENT_TYPES
 )
 
 # Default system prompt used only when no other system prompt is specified in
