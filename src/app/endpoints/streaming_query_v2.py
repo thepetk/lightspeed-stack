@@ -246,10 +246,16 @@ def create_responses_response_generator(  # pylint: disable=too-many-locals,too-
             # Incomplete response - emit error because LLS does not
             # support incomplete responses "incomplete_detail" attribute yet
             elif event_type == "response.incomplete":
-                error_response = InternalServerErrorResponse.query_failed(
+                incomplete_error_message = (
                     "An unexpected error occurred while processing the request."
                 )
-                logger.error("Error while obtaining answer for user question")
+                error_response = InternalServerErrorResponse.query_failed(
+                    incomplete_error_message
+                )
+                logger.error(
+                    "Error while obtaining answer for user question: %s",
+                    incomplete_error_message,
+                )
                 yield format_stream_data(
                     {"event": "error", "data": {**error_response.detail.model_dump()}}
                 )
@@ -265,7 +271,9 @@ def create_responses_response_generator(  # pylint: disable=too-many-locals,too-
                     else "An unexpected error occurred while processing the request."
                 )
                 error_response = InternalServerErrorResponse.query_failed(error_message)
-                logger.error("Error while obtaining answer for user question")
+                logger.error(
+                    "Error while obtaining answer for user question: %s", error_message
+                )
                 yield format_stream_data(
                     {"event": "error", "data": {**error_response.detail.model_dump()}}
                 )
