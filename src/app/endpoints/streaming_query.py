@@ -27,6 +27,7 @@ from openai._exceptions import APIStatusError as OpenAIAPIStatusError
 
 import metrics
 from metrics.utils import measure_ttft
+from utils.llm_judge import evaluate_interaction, should_sample
 from authentication import get_auth_dependency
 from authentication.interface import AuthTuple
 from authorization.azure_token_manager import AzureEntraIDManager
@@ -589,6 +590,36 @@ async def generate_response(
         skip_userid_check=context.skip_userid_check,
         topic_summary=topic_summary,
     )
+
+    # LLM-as-a-Judge: optionally evaluate this interaction as a fire-and-forget task.
+    # we prefer asyncio.create_task() over BackgroundTasks cause we're inside an already
+    # async generator.
+    judge_config = configuration.llm_judge
+    if (
+        judge_config is not None
+        and judge_config.enabled
+        and judge_config.model
+        and should_sample(judge_config.sampling_rate)
+    ):
+        judge_system_prompt = (
+            configuration.customization.system_prompt
+            if configuration.customization
+            else ""
+        ) or ""
+        # should bring zero latency as it's triggered
+        # after the generator has finished yiedling
+        asyncio.create_task(
+            evaluate_interaction(
+                query=context.query_request.query,
+                response=turn_summary.llm_response,
+                rag_chunks=turn_summary.rag_chunks,
+                system_prompt=judge_system_prompt,
+                model_id=responses_params.model,
+                call_type="streaming_query",
+                judge_model=judge_config.model,
+                client=context.client,
+            )
+        )
 
 
 async def response_generator(  # pylint: disable=too-many-branches,too-many-statements,too-many-locals

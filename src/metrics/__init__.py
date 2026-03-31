@@ -78,3 +78,12 @@ llm_stream_duration_seconds = Histogram(
     "LLM total stream duration for streaming calls",
     ["provider", "model", "call_type"],
 )
+
+# Histogram to record LLM-as-a-judge quality scores per metric dimension (0.0–1.0).
+# Used for sampled interactions when llm_judge is enabled in configuration.
+llm_judge_score = Histogram(
+    "ls_llm_judge_score",
+    "LLM-as-a-judge evaluation scores per metric dimension",
+    ["provider", "model", "call_type", "metric_name"],
+    buckets=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+)

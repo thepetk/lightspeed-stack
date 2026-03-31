@@ -15,6 +15,7 @@ from models.config import (
     Configuration,
     Customization,
     LlamaStackConfiguration,
+    LLMJudgeConfiguration,
     OkpConfiguration,
     RagConfiguration,
     UserDataCollection,
@@ -358,6 +359,13 @@ class AppConfig:  # pylint: disable=too-many-public-methods
         if self._configuration is None:
             raise LogicError("logic error: configuration is not loaded")
         return self._configuration.splunk
+
+    @property
+    def llm_judge(self) -> Optional[LLMJudgeConfiguration]:
+        """Return LLM judge configuration, or None if not provided."""
+        if self._configuration is None:
+            raise LogicError("logic error: configuration is not loaded")
+        return self._configuration.llm_judge
 
     @property
     def deployment_environment(self) -> str:

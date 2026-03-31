@@ -51,9 +51,10 @@ async def measure_ttft(
     histogram: Histogram,
     stream: AsyncIterator[_T],
 ) -> AsyncIterator[_T]:
-    """Wrap an async stream to record true time-to-first-token (TTFT).
+    """
+    wraps an async stream to measure the time-to-first-token (TTFT)
 
-    Observes the elapsed time from *start_time* (captured before the LLM
+    As TTFT we measure the time from *start_time* (captured before the LLM
     call) until the first chunk is yielded from the stream, then re-yields
     all remaining chunks unmodified.
 

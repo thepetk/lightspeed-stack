@@ -1762,6 +1762,63 @@ class AzureEntraIdConfiguration(ConfigurationBase):
     )
 
 
+class LLMJudgeConfiguration(ConfigurationBase):
+    """LLM-as-a-Judge evaluation configuration.
+
+    When enabled, a (configurable) fraction of LLM interactions are evaluated
+    asynchronously by the selected judge model across seven quality metrics.
+    Evaluation results are emitted as Prometheus Histogram observations and
+    never delay the user-facing response.
+
+    Attributes:
+        enabled: Enable or disable LLM-as-a-judge evaluation.
+        model: Full model ID (provider/model) of the judge LLM.
+        sampling_rate: Fraction of interactions to evaluate (0.0–1.0).
+    """
+
+    enabled: bool = Field(
+        False,
+        title="Enabled",
+        description="Enable or disable LLM-as-a-judge evaluation.",
+    )
+
+    model: Optional[str] = Field(
+        None,
+        title="Judge model",
+        description=(
+            "Full model ID (provider/model) of the judge LLM. "
+            "Required when enabled=True."
+        ),
+    )
+
+    sampling_rate: float = Field(
+        0.1,
+        title="Sampling rate",
+        description="Fraction of interactions to evaluate (0.0–1.0). Defaults to 0.1 (10%).",
+    )
+
+    @model_validator(mode="after")
+    def check_llm_judge_configuration(self) -> Self:
+        """Validate required fields when judge is enabled.
+
+        Returns:
+            Self: The validated configuration instance.
+
+        Raises:
+            ValueError: If enabled=True but model is missing, or sampling_rate is out of range.
+        """
+        if self.enabled and not self.model:
+            raise ValueError(
+                "llm_judge.model must be set when llm_judge.enabled is True"
+            )
+        if not (0.0 <= self.sampling_rate <= 1.0):
+            raise ValueError(
+                f"llm_judge.sampling_rate must be between 0.0 and 1.0, "
+                f"got {self.sampling_rate}"
+            )
+        return self
+
+
 class Configuration(ConfigurationBase):
     """Global service configuration."""
 
@@ -1877,6 +1934,15 @@ class Configuration(ConfigurationBase):
         default=None,
         title="Splunk configuration",
         description="Splunk HEC configuration for sending telemetry events.",
+    )
+
+    llm_judge: Optional[LLMJudgeConfiguration] = Field(
+        default=None,
+        title="LLM judge configuration",
+        description=(
+            "LLM-as-a-Judge evaluation configuration. When enabled, a sampled fraction "
+            "of interactions are evaluated asynchronously by a secondary judge model."
+        ),
     )
 
     deployment_environment: str = Field(

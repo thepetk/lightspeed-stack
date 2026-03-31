@@ -7,7 +7,7 @@ from typing import Annotated, Any, Optional, cast
 
 import metrics
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from llama_stack_api.openai_responses import OpenAIResponseObject
 from llama_stack_client import (
     APIConnectionError,
@@ -70,6 +70,7 @@ from utils.types import (
     ShieldModerationResult,
     TurnSummary,
 )
+from utils.llm_judge import evaluate_interaction, should_sample
 from utils.vector_search import build_rag_context
 
 logger = get_logger(__name__)
@@ -100,6 +101,7 @@ async def query_endpoint_handler(
     request: Request,
     query_request: QueryRequest,
     auth: Annotated[AuthTuple, Depends(get_auth_dependency())],
+    background_tasks: BackgroundTasks,
     mcp_headers: McpHeaders = Depends(mcp_headers_dependency),
 ) -> QueryResponse:
     """
@@ -251,6 +253,32 @@ async def query_endpoint_handler(
         skip_userid_check=_skip_userid_check,
         topic_summary=topic_summary,
     )
+
+    # LLM-as-a-Judge: optionally evaluate this interaction in the background.
+    # Runs after the response is returned — no latency impact on the user.
+    judge_config = configuration.llm_judge
+    if (
+        judge_config is not None
+        and judge_config.enabled
+        and judge_config.model
+        and should_sample(judge_config.sampling_rate)
+    ):
+        judge_system_prompt = (
+            configuration.customization.system_prompt
+            if configuration.customization
+            else ""
+        ) or ""
+        background_tasks.add_task(
+            evaluate_interaction,
+            query=query_request.query,
+            response=turn_summary.llm_response,
+            rag_chunks=turn_summary.rag_chunks,
+            system_prompt=judge_system_prompt,
+            model_id=responses_params.model,
+            call_type="query",
+            judge_model=judge_config.model,
+            client=client,
+        )
 
     logger.info("Building final response")
     return QueryResponse(
