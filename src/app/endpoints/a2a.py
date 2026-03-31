@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 import uuid
 from collections.abc import Mapping, AsyncIterator, MutableMapping
 from datetime import datetime, UTC
@@ -37,6 +38,8 @@ from starlette.responses import Response, StreamingResponse
 
 from a2a_storage import A2AContextStore, A2AStorageFactory
 
+import metrics
+from metrics.utils import measure_ttft
 from authentication import get_auth_dependency
 from authentication.interface import AuthTuple
 from authorization.middleware import authorize
@@ -46,6 +49,7 @@ from constants import MEDIA_TYPE_EVENT_STREAM
 from models.config import Action
 from models.requests import QueryRequest
 from utils.mcp_headers import mcp_headers_dependency, McpHeaders
+from utils.query import extract_provider_and_model_from_model_id
 from utils.responses import (
     extract_text_from_response_item,
     prepare_responses_params,
@@ -336,8 +340,19 @@ class A2AAgentExecutor(AgentExecutor):
                 store=True,
                 request_headers=self.request_headers,
             )
-            # Stream response from LLM using the Responses API
-            stream = await client.responses.create(**responses_params.model_dump())
+            # Measure true time-to-first-token: record start time before the LLM
+            # call, then wrap the stream so the histogram is observed when the
+            # first chunk is yielded rather than when the stream object is returned.
+            provider_id, model_label = extract_provider_and_model_from_model_id(
+                responses_params.model
+            )
+            ttft_start = time.monotonic()
+            raw_stream = await client.responses.create(**responses_params.model_dump())
+            stream = measure_ttft(
+                ttft_start,
+                metrics.llm_ttft_seconds.labels(provider_id, model_label, "a2a"),
+                raw_stream,
+            )
         except APIConnectionError as e:
             error_message = (
                 f"Unable to connect to Llama Stack backend service: {e!s}. "

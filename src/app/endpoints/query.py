@@ -5,6 +5,8 @@
 import datetime
 from typing import Annotated, Any, Optional, cast
 
+import metrics
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from llama_stack_api.openai_responses import OpenAIResponseObject
 from llama_stack_client import (
@@ -45,6 +47,7 @@ from utils.mcp_headers import McpHeaders, mcp_headers_dependency
 from utils.mcp_oauth_probe import check_mcp_auth
 from utils.query import (
     consume_query_tokens,
+    extract_provider_and_model_from_model_id,
     handle_known_apistatus_errors,
     prepare_input,
     store_query_results,
@@ -293,9 +296,15 @@ async def retrieve_response(  # pylint: disable=too-many-locals
         )
         return TurnSummary(llm_response=moderation_result.message)
     try:
-        response = await client.responses.create(
-            **responses_params.model_dump(exclude_none=True)
+        provider_id, model_label = extract_provider_and_model_from_model_id(
+            responses_params.model
         )
+        with metrics.llm_duration_seconds.labels(
+            provider_id, model_label, "query"
+        ).time():
+            response = await client.responses.create(
+                **responses_params.model_dump(exclude_none=True)
+            )
         response = cast(OpenAIResponseObject, response)
 
     except RuntimeError as e:  # library mode wraps 413 into runtime error
@@ -316,5 +325,5 @@ async def retrieve_response(  # pylint: disable=too-many-locals
     vector_store_ids = extract_vector_store_ids_from_tools(responses_params.tools)
     rag_id_mapping = configuration.rag_id_mapping
     return build_turn_summary(
-        response, responses_params.model, vector_store_ids, rag_id_mapping
+        response, responses_params.model, "query", vector_store_ids, rag_id_mapping
     )

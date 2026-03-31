@@ -1497,7 +1497,7 @@ class TestExtractTokenUsage:
         mocker.patch("utils.responses.metrics.llm_token_received_total")
         mocker.patch("utils.responses._increment_llm_call_metric")
 
-        result = extract_token_usage(mock_usage, "provider1/model1")
+        result = extract_token_usage(mock_usage, "provider1/model1", "query")
         assert result.input_tokens == input_tokens
         assert result.output_tokens == output_tokens
         assert result.llm_calls == 1
@@ -1510,7 +1510,7 @@ class TestExtractTokenUsage:
         )
         mocker.patch("utils.responses._increment_llm_call_metric")
 
-        result = extract_token_usage(None, "provider1/model1")
+        result = extract_token_usage(None, "provider1/model1", "query")
         assert result.input_tokens == 0
         assert result.output_tokens == 0
         assert result.llm_calls == 1
@@ -1527,7 +1527,7 @@ class TestExtractTokenUsage:
         )
         mocker.patch("utils.responses._increment_llm_call_metric")
 
-        result = extract_token_usage(mock_usage, "provider1/model1")
+        result = extract_token_usage(mock_usage, "provider1/model1", "query")
         assert result.input_tokens == 0
         assert result.output_tokens == 0
 
@@ -1539,7 +1539,7 @@ class TestExtractTokenUsage:
         )
         mocker.patch("utils.responses._increment_llm_call_metric")
 
-        result = extract_token_usage(None, "provider1/model1")
+        result = extract_token_usage(None, "provider1/model1", "query")
         assert result.input_tokens == 0
         assert result.output_tokens == 0
 
@@ -1564,9 +1564,36 @@ class TestExtractTokenUsage:
         mocker.patch("utils.responses._increment_llm_call_metric")
 
         # Should not raise, just log warning
-        result = extract_token_usage(mock_usage, "provider1/model1")
+        result = extract_token_usage(mock_usage, "provider1/model1", "query")
         assert result.input_tokens == 100
         assert result.output_tokens == 50
+
+    def test_extract_token_usage_call_type_label_propagated(
+        self, mocker: MockerFixture
+    ) -> None:
+        """call_type is forwarded as a Prometheus label for both token counters."""
+        mock_usage = mocker.Mock()
+        mock_usage.input_tokens = 10
+        mock_usage.output_tokens = 5
+
+        mocker.patch(
+            "utils.responses.extract_provider_and_model_from_model_id",
+            return_value=("provider1", "model1"),
+        )
+        mock_sent = mocker.patch("utils.responses.metrics.llm_token_sent_total")
+        mock_received = mocker.patch(
+            "utils.responses.metrics.llm_token_received_total"
+        )
+        mocker.patch("utils.responses._increment_llm_call_metric")
+
+        extract_token_usage(mock_usage, "provider1/model1", "streaming_query")
+
+        mock_sent.labels.assert_called_once_with(
+            "provider1", "model1", "streaming_query"
+        )
+        mock_received.labels.assert_called_once_with(
+            "provider1", "model1", "streaming_query"
+        )
 
 
 class TestBuildToolCallSummary:

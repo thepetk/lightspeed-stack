@@ -3,6 +3,7 @@
 import asyncio
 import datetime
 import json
+import time
 from typing import Annotated, Any, Optional, cast
 from collections.abc import AsyncIterator
 
@@ -25,6 +26,7 @@ from llama_stack_client import (
 from openai._exceptions import APIStatusError as OpenAIAPIStatusError
 
 import metrics
+from metrics.utils import measure_ttft
 from authentication import get_auth_dependency
 from authentication.interface import AuthTuple
 from authorization.azure_token_manager import AzureEntraIDManager
@@ -316,14 +318,28 @@ async def retrieve_response_generator(
                 ),
                 turn_summary,
             )
-        # Retrieve response stream (may raise exceptions)
+
+        # Measure true time-to-first-token: record start time before the LLM
+        # call, then wrap the stream so the histogram is observed when the first
+        # chunk is yielded rather than when the stream object is returned.
+        provider_id, model_label = extract_provider_and_model_from_model_id(
+            responses_params.model
+        )
+        ttft_start = time.monotonic()
         response = await context.client.responses.create(
             **responses_params.model_dump(exclude_none=True)
+        )
+        ttft_stream = measure_ttft(
+            ttft_start,
+            metrics.llm_ttft_seconds.labels(
+                provider_id, model_label, "streaming_query"
+            ),
+            response,
         )
         # Store pre-RAG documents for later merging with tool-based RAG
         return (
             response_generator(
-                response,
+                ttft_stream,
                 context,
                 turn_summary,
             ),
@@ -758,7 +774,7 @@ async def response_generator(  # pylint: disable=too-many-branches,too-many-stat
         return
 
     turn_summary.token_usage = extract_token_usage(
-        latest_response_object.usage, context.model_id
+        latest_response_object.usage, context.model_id, "streaming_query"
     )
     # Parse tool-based referenced documents from the final response object
     tool_rag_docs = parse_referenced_documents(

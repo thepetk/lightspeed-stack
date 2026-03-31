@@ -42,14 +42,39 @@ llm_calls_validation_errors_total = Counter(
     "ls_llm_validation_errors_total", "LLM validation errors"
 )
 
-# TODO(lucasagomes): Add metric for token usage
-# https://issues.redhat.com/browse/LCORE-411
-llm_token_sent_total = Counter(
-    "ls_llm_token_sent_total", "LLM tokens sent", ["provider", "model"]
+# Histogram to measure E2E LLM call durations per provider, model, and call type.
+# Only used for non-streaming calls (query, rlsapi, topic_summary) where the full
+# round-trip duration is meaningful.
+llm_duration_seconds = Histogram(
+    "ls_llm_duration_seconds",
+    "LLM E2E call durations (non-streaming)",
+    ["provider", "model", "call_type"],
 )
 
-# TODO(lucasagomes): Add metric for token usage
-# https://issues.redhat.com/browse/LCORE-411
+# Histogram to measure time-to-first-token (TTFT) for streaming LLM calls.
+# Captures the time from request creation until the stream is opened and the
+# first chunk is received. Only used for streaming call types (streaming_query, a2a).
+llm_ttft_seconds = Histogram(
+    "ls_llm_ttft_seconds",
+    "LLM time-to-first-token for streaming calls",
+    ["provider", "model", "call_type"],
+)
+
+# Metric to count LLM tokens sent in requests, by provider, model, and call type.
+llm_token_sent_total = Counter(
+    "ls_llm_token_sent_total", "LLM tokens sent", ["provider", "model", "call_type"]
+)
+
+# Metric to count LLM tokens received in responses, by provider, model, and call type.
 llm_token_received_total = Counter(
-    "ls_llm_token_received_total", "LLM tokens received", ["provider", "model"]
+    "ls_llm_token_received_total",
+    "LLM tokens received",
+    ["provider", "model", "call_type"],
+)
+
+# Histogram to measure the total duration of streaming LLM calls.
+llm_stream_duration_seconds = Histogram(
+    "ls_llm_stream_duration_seconds",
+    "LLM total stream duration for streaming calls",
+    ["provider", "model", "call_type"],
 )

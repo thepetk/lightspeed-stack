@@ -46,3 +46,6 @@ async def test_metrics_endpoint(mocker: MockerFixture) -> None:
     assert "# TYPE ls_llm_validation_errors_created gauge" in response_body
     assert "# TYPE ls_llm_token_sent_total counter" in response_body
     assert "# TYPE ls_llm_token_received_total counter" in response_body
+    assert "# TYPE ls_llm_duration_seconds histogram" in response_body
+    assert "# TYPE ls_llm_ttft_seconds histogram" in response_body
+    assert "# TYPE ls_llm_stream_duration_seconds histogram" in response_body

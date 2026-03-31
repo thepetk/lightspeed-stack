@@ -117,16 +117,21 @@ async def get_topic_summary(  # pylint: disable=too-many-nested-blocks
         The topic summary for the question
     """
     try:
-        response = cast(
-            ResponseObject,
-            await client.responses.create(
-                input=question,
-                model=model_id,
-                instructions=get_topic_summary_system_prompt(),
-                stream=False,
-                store=False,  # Don't store topic summary requests
-            ),
-        )
+        provider_id, model_label = extract_provider_and_model_from_model_id(model_id)
+        with metrics.llm_duration_seconds.labels(
+            provider_id, model_label, "topic_summary"
+        ).time():
+            response = cast(
+                ResponseObject,
+                await client.responses.create(
+                    input=question,
+                    model=model_id,
+                    instructions=get_topic_summary_system_prompt(),
+                    stream=False,
+                    store=False,  # Don't store topic summary requests
+                ),
+            )
+        extract_token_usage(response.usage, model_id, "topic_summary")
     except APIConnectionError as e:
         error_response = ServiceUnavailableResponse(
             backend_name="Llama Stack",
@@ -561,12 +566,16 @@ def parse_referenced_documents(  # pylint: disable=too-many-locals
     return documents
 
 
-def extract_token_usage(usage: Optional[ResponseUsage], model: str) -> TokenCounter:
+def extract_token_usage(
+    usage: Optional[ResponseUsage], model: str, call_type: str
+) -> TokenCounter:
     """Extract token usage from Responses API usage object and update metrics.
 
     Args:
         usage: ResponseUsage from the Responses API response, or None if not available.
         model: The model identifier in "provider/model" format
+        call_type: The type of LLM call (e.g. "query", "streaming_query", "rlsapi",
+            "a2a", "topic_summary"). Used as a Prometheus label.
 
     Returns:
         TokenCounter with input_tokens and output_tokens
@@ -590,10 +599,10 @@ def extract_token_usage(usage: Optional[ResponseUsage], model: str) -> TokenCoun
 
     # Update Prometheus metrics only when we have actual usage data
     try:
-        metrics.llm_token_sent_total.labels(provider_id, model_id).inc(
+        metrics.llm_token_sent_total.labels(provider_id, model_id, call_type).inc(
             token_counter.input_tokens
         )
-        metrics.llm_token_received_total.labels(provider_id, model_id).inc(
+        metrics.llm_token_received_total.labels(provider_id, model_id, call_type).inc(
             token_counter.output_tokens
         )
     except (AttributeError, TypeError, ValueError) as e:
@@ -1047,6 +1056,7 @@ async def select_model_for_responses(
 def build_turn_summary(
     response: Optional[ResponseObject],
     model: str,
+    call_type: str,
     vector_store_ids: Optional[list[str]] = None,
     rag_id_mapping: Optional[dict[str, str]] = None,
 ) -> TurnSummary:
@@ -1055,6 +1065,7 @@ def build_turn_summary(
     Args:
         response: The ResponseObject to build the turn summary from, or None
         model: The model identifier in "provider/model" format
+        call_type: The type of LLM call, forwarded to extract_token_usage for labeling.
         vector_store_ids: Vector store IDs used in the query for source resolution.
         rag_id_mapping: Mapping from vector_db_id to user-facing rag_id.
     Returns:
@@ -1084,7 +1095,7 @@ def build_turn_summary(
         if tool_result:
             summary.tool_results.append(tool_result)
 
-    summary.token_usage = extract_token_usage(response.usage, model)
+    summary.token_usage = extract_token_usage(response.usage, model, call_type)
     return summary
 
 

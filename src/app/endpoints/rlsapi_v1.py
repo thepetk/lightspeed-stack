@@ -260,16 +260,20 @@ async def retrieve_simple_response(
     resolved_model_id = model_id or await _get_default_model_id()
     logger.debug("Using model %s for rlsapi v1 inference", resolved_model_id)
 
-    response = await client.responses.create(
-        input=question,
-        model=resolved_model_id,
-        instructions=instructions,
-        tools=tools or [],
-        stream=False,
-        store=False,
+    provider_id, model_label = extract_provider_and_model_from_model_id(
+        resolved_model_id
     )
+    with metrics.llm_duration_seconds.labels(provider_id, model_label, "rlsapi").time():
+        response = await client.responses.create(
+            input=question,
+            model=resolved_model_id,
+            instructions=instructions,
+            tools=tools or [],
+            stream=False,
+            store=False,
+        )
     response = cast(OpenAIResponseObject, response)
-    extract_token_usage(response.usage, resolved_model_id)
+    extract_token_usage(response.usage, resolved_model_id, "rlsapi")
 
     return extract_text_from_response_items(response.output)
 
