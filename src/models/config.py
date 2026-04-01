@@ -1791,8 +1791,8 @@ class LLMJudgeConfiguration(ConfigurationBase):
         ),
     )
 
-    sampling_rate: float = Field(
-        0.1,
+    sampling_rate: Optional[float] = Field(
+        None,
         title="Sampling rate",
         description="Fraction of interactions to evaluate (0.0–1.0). Defaults to 0.1 (10%).",
     )
@@ -1811,6 +1811,8 @@ class LLMJudgeConfiguration(ConfigurationBase):
             raise ValueError(
                 "llm_judge.model must be set when llm_judge.enabled is True"
             )
+        if self.sampling_rate is None:
+            self.sampling_rate = 0.1
         if not (0.0 <= self.sampling_rate <= 1.0):
             raise ValueError(
                 f"llm_judge.sampling_rate must be between 0.0 and 1.0, "

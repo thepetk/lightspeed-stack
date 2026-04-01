@@ -11,13 +11,32 @@ from llama_stack_client import AsyncLlamaStackClient
 import metrics
 from constants import (
     LLM_JUDGE_ALL_METRICS,
-    LLM_JUDGE_SYSTEM_PROMPTS,
+    LLM_JUDGE_CRITERIA,
+    LLM_JUDGE_METRIC_ANSWER_RELEVANCY,
+    LLM_JUDGE_METRIC_BIAS,
+    LLM_JUDGE_METRIC_CONTEXTUAL_RELEVANCY,
+    LLM_JUDGE_METRIC_HALLUCINATION,
+    LLM_JUDGE_METRIC_HELPFULNESS,
+    LLM_JUDGE_METRIC_PROMPT_ALIGNMENT,
+    LLM_JUDGE_METRIC_TOXICITY,
+    LLM_JUDGE_SCORING_SYSTEM_PROMPT,
+    LLM_JUDGE_STEP_GEN_SYSTEM_PROMPT,
 )
 from log import get_logger
 from utils.query import extract_provider_and_model_from_model_id
 from utils.responses import extract_text_from_response_items
 
 logger = get_logger(__name__)
+
+# Module-level aliases — convenience re-exports used by tests and callers.
+ALL_METRICS = LLM_JUDGE_ALL_METRICS
+METRIC_ANSWER_RELEVANCY = LLM_JUDGE_METRIC_ANSWER_RELEVANCY
+METRIC_CONTEXTUAL_RELEVANCY = LLM_JUDGE_METRIC_CONTEXTUAL_RELEVANCY
+METRIC_TOXICITY = LLM_JUDGE_METRIC_TOXICITY
+METRIC_BIAS = LLM_JUDGE_METRIC_BIAS
+METRIC_PROMPT_ALIGNMENT = LLM_JUDGE_METRIC_PROMPT_ALIGNMENT
+METRIC_HELPFULNESS = LLM_JUDGE_METRIC_HELPFULNESS
+METRIC_HALLUCINATION = LLM_JUDGE_METRIC_HALLUCINATION
 
 
 def should_sample(sampling_rate: float) -> bool:
@@ -33,14 +52,54 @@ def should_sample(sampling_rate: float) -> bool:
     return random.random() < sampling_rate
 
 
+async def _generate_evaluation_steps(
+    metric_name: str,
+    client: AsyncLlamaStackClient,
+    judge_model: str,
+) -> str:
+    """Generate evaluation steps for a metric using the judge LLM (G-Eval phase 1).
+
+    Asks the judge to produce a numbered list of concrete evaluation steps
+    derived from the task description and criteria for the given metric.
+
+    Args:
+        metric_name: One of the ALL_METRICS strings.
+        client: The AsyncLlamaStackClient instance.
+        judge_model: Full model ID of the judge LLM.
+
+    Returns:
+        str: Numbered evaluation steps as plain text, or ``""`` on failure.
+    """
+    task, criteria = LLM_JUDGE_CRITERIA[metric_name]
+    user_prompt = (
+        f"Task: {task}\n\nCriteria: {criteria}\n\nGenerate evaluation steps:"
+    )
+    try:
+        response = await client.responses.create(
+            input=user_prompt,
+            model=judge_model,
+            instructions=LLM_JUDGE_STEP_GEN_SYSTEM_PROMPT,
+            stream=False,
+            store=False,
+        )
+        return extract_text_from_response_items(response.output)
+    except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            "LLM judge: failed to generate evaluation steps for metric '%s'",
+            metric_name,
+        )
+        return ""
+
+
 def _build_judge_user_prompt(
     metric_name: str,
     query: str,
     response: str,
     rag_context: str,
     system_prompt: str,
+    evaluation_steps: str = "",
 ) -> str:
-    """Construct the user-facing evaluation prompt for the judge.
+    """Construct the user-facing scoring prompt for the judge (G-Eval phase 2).
 
     Args:
         metric_name: The metric being evaluated (e.g. "answer_relevancy").
@@ -48,52 +107,58 @@ def _build_judge_user_prompt(
         response: The assistant's response.
         rag_context: Retrieved context chunks joined as a single string.
         system_prompt: The system prompt used for this interaction.
+        evaluation_steps: Numbered steps generated in phase 1. When non-empty
+            they are injected before the scoring instruction.
 
     Returns:
         str: The formatted user prompt.
     """
-    parts = [f"## User Question\n{query}\n"]
+    parts = []
+    if evaluation_steps:
+        parts.append(f"## Evaluation Steps\n{evaluation_steps}\n")
+    parts.append(f"## User Question\n{query}\n")
     if system_prompt:
         parts.append(f"## System Prompt\n{system_prompt}\n")
     if rag_context:
         parts.append(f"## Retrieved Context\n{rag_context}\n")
     parts.append(f"## Assistant Response\n{response}\n")
     parts.append(
-        f"Evaluate the **{metric_name.replace('_', ' ')}** of the assistant response."
+        f"Follow the evaluation steps above and score the "
+        f"**{metric_name.replace('_', ' ')}** of the assistant response "
+        f"from 1 (worst) to 5 (best)."
     )
     return "\n".join(parts)
 
 
 def _parse_score(raw: str) -> Optional[float]:
-    """Extract a 0.0–1.0 float score from a judge response string.
+    """Extract a 1–5 integer score and normalize it to [0.0, 1.0].
 
     Strategy:
-    1. Try to parse JSON ``{"score": <float>}`` from the response.
-    2. Fall back to the first bare float found by regex.
-    3. Clamp result to [0.0, 1.0].
+    1. Try to parse JSON ``{"score": N}`` where ``1 <= N <= 5``.
+    2. Fall back to the first bare integer in range [1-5] found by regex.
+    3. Normalize: ``(score - 1) / 4.0``.
 
     Args:
         raw: The raw text response from the judge model.
 
     Returns:
-        Optional[float]: Parsed score in [0.0, 1.0], or None on failure.
+        Optional[float]: Normalized score in [0.0, 1.0], or None on failure.
     """
-    # JSON extraction — handles preamble/postamble around the object
     json_match = re.search(r'\{[^{}]*"score"\s*:\s*(-?[\d.]+)[^{}]*\}', raw)
     if json_match:
         try:
             obj = json.loads(json_match.group(0))
             score = float(obj["score"])
-            return max(0.0, min(1.0, score))
+            if 1.0 <= score <= 5.0:
+                return (score - 1.0) / 4.0
         except (json.JSONDecodeError, KeyError, ValueError):
             pass
 
-    # Bare float fallback
-    float_match = re.search(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", raw)
-    if float_match:
+    int_match = re.search(r"\b([1-5])\b", raw)
+    if int_match:
         try:
-            score = float(float_match.group(1))
-            return max(0.0, min(1.0, score))
+            score = float(int_match.group(1))
+            return (score - 1.0) / 4.0
         except ValueError:
             pass
 
@@ -111,10 +176,11 @@ async def _evaluate_single_metric(
     judge_model: str,
     client: AsyncLlamaStackClient,
 ) -> None:
-    """Run the judge for a single metric and observe the result.
+    """Run the two-phase G-Eval judge for a single metric and observe the result.
 
-    Any exception is caught and logged so that one failing metric does not
-    abort the others or propagate to the user.
+    Phase 1 generates evaluation steps; phase 2 scores the interaction using
+    those steps. Any exception is caught and logged so that one failing metric
+    does not abort the others or propagate to the user.
 
     Args:
         metric_name: One of the ALL_METRICS strings.
@@ -127,16 +193,21 @@ async def _evaluate_single_metric(
         judge_model: Full model ID of the judge LLM.
         client: The AsyncLlamaStackClient instance.
     """
-    system_instruction = LLM_JUDGE_SYSTEM_PROMPTS[metric_name]
+    # generate evaluation steps from task + criteria
+    evaluation_steps = await _generate_evaluation_steps(
+        metric_name, client, judge_model
+    )
+
+    # score using the generated steps
     user_prompt = _build_judge_user_prompt(
-        metric_name, query, response, rag_context, system_prompt
+        metric_name, query, response, rag_context, system_prompt, evaluation_steps
     )
 
     try:
         judge_response = await client.responses.create(
             input=user_prompt,
             model=judge_model,
-            instructions=system_instruction,
+            instructions=LLM_JUDGE_SCORING_SYSTEM_PROMPT,
             stream=False,
             store=False,
         )
@@ -183,7 +254,7 @@ async def evaluate_interaction(
 ) -> None:
     """Evaluate a completed LLM interaction across all seven quality metrics.
 
-    Each metric is evaluated by an independent judge LLM call. All calls run
+    Each metric runs through the two-phase G-Eval flow independently and
     concurrently via asyncio.gather(). Any individual failure is logged and
     suppressed so that one bad judge call does not abort the others.
 

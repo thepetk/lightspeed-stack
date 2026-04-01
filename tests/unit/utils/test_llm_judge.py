@@ -8,10 +8,13 @@ from utils.llm_judge import (
     METRIC_ANSWER_RELEVANCY,
     METRIC_BIAS,
     METRIC_CONTEXTUAL_RELEVANCY,
+    METRIC_HALLUCINATION,
     METRIC_HELPFULNESS,
+    METRIC_PROMPT_ALIGNMENT,
     METRIC_TOXICITY,
     _build_judge_user_prompt,
     _evaluate_single_metric,
+    _generate_evaluation_steps,
     _parse_score,
     evaluate_interaction,
     should_sample,
@@ -70,62 +73,69 @@ class TestShouldSample:
 
 
 class TestParseScore:
-    """Tests for _parse_score()."""
+    """Tests for _parse_score().
 
-    def test_valid_json_score(self) -> None:
-        """Parses a clean JSON score object."""
-        assert _parse_score('{"score": 0.75}') == pytest.approx(0.75)
+    Scores are expected on a 1-5 integer scale, normalized to 0.0-1.0:
+      1 -> 0.0, 2 -> 0.25, 3 -> 0.5, 4 -> 0.75, 5 -> 1.0
+    """
+
+    def test_score_1_normalizes_to_0(self) -> None:
+        """Score 1 normalizes to 0.0."""
+        assert _parse_score('{"score": 1}') == pytest.approx(0.0)
+
+    def test_score_2_normalizes_to_0_25(self) -> None:
+        """Score 2 normalizes to 0.25."""
+        assert _parse_score('{"score": 2}') == pytest.approx(0.25)
+
+    def test_score_3_normalizes_to_0_5(self) -> None:
+        """Score 3 normalizes to 0.5."""
+        assert _parse_score('{"score": 3}') == pytest.approx(0.5)
+
+    def test_score_4_normalizes_to_0_75(self) -> None:
+        """Score 4 normalizes to 0.75."""
+        assert _parse_score('{"score": 4}') == pytest.approx(0.75)
+
+    def test_score_5_normalizes_to_1(self) -> None:
+        """Score 5 normalizes to 1.0."""
+        assert _parse_score('{"score": 5}') == pytest.approx(1.0)
 
     def test_json_with_preamble(self) -> None:
         """Parses score from JSON embedded in surrounding text."""
         assert _parse_score(
-            'Here is my evaluation: {"score": 0.9} done.'
-        ) == pytest.approx(0.9)
+            'Here is my evaluation: {"score": 4} done.'
+        ) == pytest.approx(0.75)
 
-    def test_bare_float_fallback(self) -> None:
-        """Falls back to bare float when no JSON is present."""
-        assert _parse_score("0.6") == pytest.approx(0.6)
+    def test_bare_integer_fallback(self) -> None:
+        """Falls back to bare integer when no JSON is present."""
+        assert _parse_score("3") == pytest.approx(0.5)
 
-    def test_clamp_score_above_one(self) -> None:
-        """Clamps score > 1.0 to 1.0."""
-        assert _parse_score('{"score": 1.5}') == pytest.approx(1.0)
+    def test_out_of_range_score_0_returns_none(self) -> None:
+        """Score 0 is out of 1-5 range and returns None."""
+        assert _parse_score('{"score": 0}') is None
 
-    def test_clamp_score_below_zero(self) -> None:
-        """Clamps score < 0.0 to 0.0."""
-        assert _parse_score('{"score": -0.3}') == pytest.approx(0.0)
-
-    def test_score_exactly_zero(self) -> None:
-        """Accepts a score of exactly 0.0."""
-        assert _parse_score('{"score": 0.0}') == pytest.approx(0.0)
-
-    def test_score_exactly_one(self) -> None:
-        """Accepts a score of exactly 1.0."""
-        assert _parse_score('{"score": 1.0}') == pytest.approx(1.0)
+    def test_out_of_range_score_6_returns_none(self) -> None:
+        """Score 6 is out of 1-5 range and returns None."""
+        assert _parse_score('{"score": 6}') is None
 
     def test_unparseable_returns_none(self) -> None:
         """Returns None when response contains no recognisable score."""
         assert _parse_score("I cannot evaluate this.") is None
 
     def test_malformed_json_falls_back_to_regex(self) -> None:
-        """Falls back to bare float regex when JSON is malformed."""
-        result = _parse_score('{"score": abc}')
-        # "abc" is not a float — neither strategy matches → None
-        assert result is None
+        """Falls back to bare integer regex when JSON is malformed."""
+        # "abc" is not a number — but there is no bare 1-5 integer either
+        assert _parse_score('{"score": abc}') is None
 
-    def test_bare_float_one(self) -> None:
-        """Bare float '1' is parsed as 1.0."""
-        assert _parse_score("1") == pytest.approx(1.0)
-
-    def test_bare_float_zero(self) -> None:
-        """Bare float '0' is parsed as 0.0."""
-        assert _parse_score("0") == pytest.approx(0.0)
+    def test_malformed_json_with_recoverable_integer(self) -> None:
+        """Bare integer found after malformed JSON is used as fallback."""
+        assert _parse_score('{"score": abc} rating: 3') == pytest.approx(0.5)
 
 
 class TestBuildJudgeUserPrompt:
     """Tests for _build_judge_user_prompt()."""
 
     def test_metric_name_appears_in_output(self) -> None:
-        """The metric name (with spaces) appears in the last line."""
+        """The metric name (with spaces) appears in the scoring instruction."""
         prompt = _build_judge_user_prompt("answer_relevancy", "q", "r", "", "")
         assert "answer relevancy" in prompt
 
@@ -163,6 +173,51 @@ class TestBuildJudgeUserPrompt:
         assert "What is Python?" in prompt
         assert "Python is a language." in prompt
 
+    def test_evaluation_steps_included_when_provided(self) -> None:
+        """## Evaluation Steps section is present when evaluation_steps is non-empty."""
+        steps = "1. Check relevance\n2. Check completeness"
+        prompt = _build_judge_user_prompt(
+            METRIC_ANSWER_RELEVANCY, "q", "r", "", "", evaluation_steps=steps
+        )
+        assert "## Evaluation Steps" in prompt
+        assert steps in prompt
+
+    def test_evaluation_steps_absent_by_default(self) -> None:
+        """## Evaluation Steps section is absent when evaluation_steps is empty."""
+        prompt = _build_judge_user_prompt(METRIC_ANSWER_RELEVANCY, "q", "r", "", "")
+        assert "## Evaluation Steps" not in prompt
+
+
+class TestGenerateEvaluationSteps:
+    """Tests for _generate_evaluation_steps()."""
+
+    @pytest.mark.asyncio
+    async def test_success_returns_steps_text(
+        self, mock_client, mocker: MockerFixture
+    ) -> None:
+        """Returns the text from the judge response on success."""
+        mock_client.responses.create.return_value = _make_response_object(
+            "1. Check A\n2. Check B", mocker
+        )
+
+        result = await _generate_evaluation_steps(
+            METRIC_ANSWER_RELEVANCY, mock_client, "judge/model"
+        )
+
+        assert result == "1. Check A\n2. Check B"
+        mock_client.responses.create.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_empty_string(self, mock_client) -> None:
+        """Returns '' without propagating when the LLM call raises."""
+        mock_client.responses.create.side_effect = RuntimeError("timeout")
+
+        result = await _generate_evaluation_steps(
+            METRIC_HALLUCINATION, mock_client, "judge/model"
+        )
+
+        assert result == ""
+
 
 class TestEvaluateSingleMetric:
     """Tests for _evaluate_single_metric()."""
@@ -171,10 +226,10 @@ class TestEvaluateSingleMetric:
     async def test_success_observes_metric(
         self, mock_client, mocker: MockerFixture
     ) -> None:
-        """On a valid judge response, observe() is called with the parsed score."""
-        mock_client.responses.create.return_value = _make_response_object(
-            '{"score": 0.85}', mocker
-        )
+        """On a valid judge response, observe() is called with the normalized score."""
+        steps_response = _make_response_object("1. Step one\n2. Step two", mocker)
+        score_response = _make_response_object('{"score": 4}', mocker)
+        mock_client.responses.create.side_effect = [steps_response, score_response]
 
         mock_histogram = mocker.MagicMock()
         mock_labels = mocker.MagicMock()
@@ -199,16 +254,17 @@ class TestEvaluateSingleMetric:
             call_type="query",
             metric_name=METRIC_ANSWER_RELEVANCY,
         )
-        mock_labels.observe.assert_called_once_with(pytest.approx(0.85))
+        # score 4 normalizes to (4-1)/4 = 0.75
+        mock_labels.observe.assert_called_once_with(pytest.approx(0.75))
 
     @pytest.mark.asyncio
     async def test_unparseable_response_does_not_observe(
         self, mock_client, mocker: MockerFixture
     ) -> None:
         """When the judge returns unparseable text, observe() is never called."""
-        mock_client.responses.create.return_value = _make_response_object(
-            "I have no idea what to say.", mocker
-        )
+        steps_response = _make_response_object("1. Step one", mocker)
+        score_response = _make_response_object("I have no idea what to say.", mocker)
+        mock_client.responses.create.side_effect = [steps_response, score_response]
 
         mock_histogram = mocker.MagicMock()
         mocker.patch("utils.llm_judge.metrics.llm_judge_score", mock_histogram)
@@ -228,15 +284,50 @@ class TestEvaluateSingleMetric:
         mock_histogram.labels.return_value.observe.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_client_exception_does_not_propagate(
-        self, mock_client
+    async def test_step_generation_failure_falls_back_to_empty_steps(
+        self, mock_client, mocker: MockerFixture
     ) -> None:
-        """If the judge LLM call raises, the exception is swallowed (best-effort)."""
-        mock_client.responses.create.side_effect = RuntimeError("connection failed")
+        """If step generation raises, scoring still runs with empty steps."""
+        score_response = _make_response_object('{"score": 3}', mocker)
+        mock_client.responses.create.side_effect = [
+            RuntimeError("step gen failed"),
+            score_response,
+        ]
+
+        mock_histogram = mocker.MagicMock()
+        mock_labels = mocker.MagicMock()
+        mock_histogram.labels.return_value = mock_labels
+        mocker.patch("utils.llm_judge.metrics.llm_judge_score", mock_histogram)
+
+        await _evaluate_single_metric(
+            metric_name=METRIC_BIAS,
+            query="q",
+            response="r",
+            rag_context="",
+            system_prompt="",
+            model_id="p/m",
+            call_type="query",
+            judge_model="j/m",
+            client=mock_client,
+        )
+
+        # score 3 normalizes to 0.5
+        mock_labels.observe.assert_called_once_with(pytest.approx(0.5))
+
+    @pytest.mark.asyncio
+    async def test_scoring_exception_does_not_propagate(
+        self, mock_client, mocker: MockerFixture
+    ) -> None:
+        """If the scoring LLM call raises, the exception is swallowed."""
+        steps_response = _make_response_object("1. Step one", mocker)
+        mock_client.responses.create.side_effect = [
+            steps_response,
+            RuntimeError("scoring failed"),
+        ]
 
         # Should not raise
         await _evaluate_single_metric(
-            metric_name=METRIC_BIAS,
+            metric_name=METRIC_PROMPT_ALIGNMENT,
             query="q",
             response="r",
             rag_context="",
@@ -354,7 +445,6 @@ class TestEvaluateInteraction:
             "utils.llm_judge._evaluate_single_metric", side_effect=flaky_evaluate
         )
 
-        # asyncio.gather(return_exceptions=True) means no exception is raised here
         await evaluate_interaction(
             query="q",
             response="r",
